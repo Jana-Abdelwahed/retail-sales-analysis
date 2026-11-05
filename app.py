@@ -44,7 +44,7 @@ st.markdown("""
         font-weight: 600;
     }
 
-    /* High-contrast Navy Blue for Streamlit Metric Components & Labels */
+    /* Streamlit Metric Components & Labels */
     div[data-testid="stMetricValue"] {
         color: #0F172A !important;
         font-weight: 700 !important;
@@ -109,38 +109,57 @@ plt.rcParams['axes.linewidth'] = 1.0
 st.sidebar.title("🎛️ Control Panel")
 st.sidebar.markdown("---")
 
-uploaded_file = st.sidebar.file_uploader("Upload Cleaned Dataset", type=["csv"])
+uploaded_file = st.sidebar.file_uploader("Upload Cleaned or Raw Dataset", type=["csv"])
 
 st.title("📊 Executive Retail Sales & Intelligence Dashboard")
 st.markdown("A production-grade analytics and machine learning suite tracking revenue drivers and customer behavioral clusters.")
 st.markdown("---")
 
 if uploaded_file is not None:
-    df = pd.read_csv(uploaded_file)
-    
+    try:
+        df = pd.read_csv(uploaded_file, encoding='utf-8')
+    except UnicodeDecodeError:
+        uploaded_file.seek(0)
+        df = pd.read_csv(uploaded_file, encoding='latin-1')
     df.columns = df.columns.str.strip()
     
-    rename_map = {
-        "Order Date": "OrderDate",
-        "Order ID": "OrderID",
-        "Sub-Category": "SubCategory",
-        "Segment": "CustomerSegment"
-    }
-    df = df.rename(columns=rename_map)
-
+    date_col = next((col for col in df.columns if 'date' in col.lower() or 'time' in col.lower()), None)
+    if date_col and date_col != 'OrderDate':
+        df = df.rename(columns={date_col: 'OrderDate'})
+        
+    if 'OrderDate' in df.columns:
+        df['OrderDate'] = pd.to_datetime(df['OrderDate'], errors='coerce')
+    else:
+        st.error(f"Error: Could not automatically detect a date column in your CSV. Available columns: {list(df.columns)}")
+        st.stop()
+        
     if 'Calculated_Revenue' not in df.columns:
         if 'Sales' in df.columns:
             df['Calculated_Revenue'] = pd.to_numeric(df['Sales'], errors='coerce').fillna(0.0)
         elif {'Quantity', 'UnitPrice'}.issubset(df.columns):
             df['Calculated_Revenue'] = pd.to_numeric(df['Quantity'], errors='coerce') * pd.to_numeric(df['UnitPrice'], errors='coerce')
         else:
-            df['Calculated_Revenue'] = 0.0
+            numeric_cols = df.select_dtypes(include='number').columns
+            df['Calculated_Revenue'] = df[numeric_cols[0]] if len(numeric_cols) > 0 else 0.0
 
-    if 'OrderDate' in df.columns:
-        df['OrderDate'] = pd.to_datetime(df['OrderDate'], errors='coerce')
-    else:
-        st.error("Error: Could not find an 'Order Date' or 'OrderDate' column in the uploaded CSV.")
-        st.stop()
+    cat_col = next((col for col in df.columns if 'cat' in col.lower() or 'department' in col.lower() or 'type' in col.lower()), None)
+    if cat_col and cat_col != 'Category':
+        df = df.rename(columns={cat_col: 'Category'})
+
+    reg_col = next((col for col in df.columns if 'region' in col.lower() or 'loc' in col.lower() or 'store' in col.lower()), None)
+    if reg_col and reg_col != 'Region':
+        df = df.rename(columns={reg_col: 'Region'})
+
+    cust_col = next((col for col in df.columns if 'customer' in col.lower() or 'client' in col.lower() or 'user' in col.lower()), None)
+    if cust_col and cust_col != 'CustomerID':
+        df = df.rename(columns={cust_col: 'CustomerID'})
+        
+    if 'Category' not in df.columns:
+        df['Category'] = 'General'
+    if 'Region' not in df.columns:
+        df['Region'] = 'All Regions'
+    if 'CustomerID' not in df.columns:
+        df['CustomerID'] = [f"CUST-{i}" for i in range(len(df))]
 
     st.sidebar.markdown("### Data Filters")
     regions = df['Region'].unique() if 'Region' in df.columns else []
@@ -155,7 +174,6 @@ if uploaded_file is not None:
     if 'Category' in df.columns and selected_category:
         filtered_df = filtered_df[filtered_df['Category'].isin(selected_category)]
     
-
     total_revenue = filtered_df['Calculated_Revenue'].sum() if 'Calculated_Revenue' in filtered_df.columns else filtered_df['Sales'].sum()
     total_orders = filtered_df['OrderID'].nunique() if 'OrderID' in filtered_df.columns else len(filtered_df)
     avg_order_val = total_revenue / total_orders if total_orders > 0 else 0
@@ -225,7 +243,6 @@ if uploaded_file is not None:
         sns.despine(top=True, right=True)
         st.pyplot(time_fig)
 
-
     st.markdown("---")
     st.subheader("🤖 Unsupervised Machine Learning: RFM Customer Clustering")
     st.markdown("Segmenting customer behavioral profiles using **K-Means Clustering** across Recency, Frequency, and Monetary dimensions.")
@@ -241,37 +258,43 @@ if uploaded_file is not None:
                 Monetary=('Calculated_Revenue', 'sum')
             ).reset_index()
             
+            rfm = rfm.dropna(subset=['Recency', 'Frequency', 'Monetary'])
+            
             scaler = StandardScaler()
             rfm_scaled = scaler.fit_transform(np.log1p(rfm[['Recency', 'Frequency', 'Monetary']]))
+            rfm_scaled = np.nan_to_num(rfm_scaled, nan=0.0)
             
-            n_clusters = min(4, len(rfm))
-            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-            rfm['Cluster'] = kmeans.fit_predict(rfm_scaled)
-            
-            col_m1, col_m2 = st.columns([1, 1.5])
-            with col_m1:
-                st.success(f"Successfully generated {n_clusters} distinct customer behavioral segments.")
-                st.dataframe(rfm.head(8), use_container_width=True)
+            n_clusters = min(4, len(rfm)) if len(rfm) > 0 else 1
+            if n_clusters > 0:
+                kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+                rfm['Cluster'] = kmeans.fit_predict(rfm_scaled)
                 
-            with col_m2:
-                cluster_fig, ax = plt.subplots(figsize=(8, 5))
-                cluster_fig.patch.set_facecolor('#F0F9FF')
-                ax.set_facecolor('#FFFFFF')
-                
-                sns.scatterplot(
-                    data=rfm, 
-                    x='Frequency', 
-                    y='Monetary', 
-                    hue='Cluster', 
-                    palette='Blues_r', 
-                    s=90, 
-                    alpha=0.85, 
-                    ax=ax
-                )
-                ax.set_title("Customer Segmentation Map (Frequency vs. Monetary)", fontsize=11, fontweight='bold', color='#0369A1')
-                ax.set_xlabel("Order Frequency", fontsize=10, color='#334155')
-                ax.set_ylabel("Monetary Value ($)", fontsize=10, color='#334155')
-                sns.despine(top=True, right=True)
-                st.pyplot(cluster_fig)
+                col_m1, col_m2 = st.columns([1, 1.5])
+                with col_m1:
+                    st.success(f"Successfully generated {n_clusters} distinct customer behavioral segments.")
+                    st.dataframe(rfm.head(8), use_container_width=True)
+                    
+                with col_m2:
+                    cluster_fig, ax = plt.subplots(figsize=(8, 5))
+                    cluster_fig.patch.set_facecolor('#F0F9FF')
+                    ax.set_facecolor('#FFFFFF')
+                    
+                    sns.scatterplot(
+                        data=rfm, 
+                        x='Frequency', 
+                        y='Monetary', 
+                        hue='Cluster', 
+                        palette='Blues_r', 
+                        s=90, 
+                        alpha=0.85, 
+                        ax=ax
+                    )
+                    ax.set_title("Customer Segmentation Map (Frequency vs. Monetary)", fontsize=11, fontweight='bold', color='#0369A1')
+                    ax.set_xlabel("Order Frequency", fontsize=10, color='#334155')
+                    ax.set_ylabel("Monetary Value ($)", fontsize=10, color='#334155')
+                    sns.despine(top=True, right=True)
+                    st.pyplot(cluster_fig)
+            else:
+                st.warning("Insufficient data points available for K-Means clustering.")
 else:
-    st.info("👈 Please upload your `cleaned_retail_sales.csv` file using the sidebar panel to initialize the executive dashboard.")
+    st.info("👈 Please upload your dataset using the sidebar panel to initialize the executive dashboard.")
