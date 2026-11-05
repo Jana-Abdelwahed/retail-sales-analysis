@@ -5,17 +5,18 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.preprocessing import StandardScaler
 from sklearn.cluster import KMeans
+from pathlib import Path
 
-# -------------------------------------------------------------
-# 1. Page Configuration & Unified Professional Styling
-# -------------------------------------------------------------
+import sys
+sys.path.append(str(Path(__file__).resolve().parent / "src"))
+from Data_Cleaning import load_and_clean_data, feature_engineering
+
 st.set_page_config(
     page_title="Executive Retail Intelligence Dashboard", 
     page_icon="📊", 
     layout="wide"
 )
 
-# Inject custom CSS for high-contrast navy/dark blue text across all components
 st.markdown("""
     <style>
     /* Global Background Gradient across the entire window */
@@ -59,7 +60,7 @@ st.markdown("""
         color: #0369A1 !important;
     }
 
-    /* Light/White File Uploader Inner Box & Drop Zone */
+    /* File Uploader Inner Box & Drop Zone */
     div[data-testid="stFileUploader"] {
         background: transparent !important;
         padding: 0px !important;
@@ -100,15 +101,11 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Set professional Matplotlib/Seaborn theme parameters
 sns.set_theme(style="whitegrid", palette="Blues_d")
 plt.rcParams['font.sans-serif'] = 'Segoe UI'
 plt.rcParams['axes.edgecolor'] = '#BAE6FD'
 plt.rcParams['axes.linewidth'] = 1.0
 
-# -------------------------------------------------------------
-# 2. Sidebar Navigation & File Upload
-# -------------------------------------------------------------
 st.sidebar.title("🎛️ Control Panel")
 st.sidebar.markdown("---")
 
@@ -120,9 +117,31 @@ st.markdown("---")
 
 if uploaded_file is not None:
     df = pd.read_csv(uploaded_file)
-    df['OrderDate'] = pd.to_datetime(df['OrderDate'])
     
-    # Sidebar Filters
+    df.columns = df.columns.str.strip()
+    
+    rename_map = {
+        "Order Date": "OrderDate",
+        "Order ID": "OrderID",
+        "Sub-Category": "SubCategory",
+        "Segment": "CustomerSegment"
+    }
+    df = df.rename(columns=rename_map)
+
+    if 'Calculated_Revenue' not in df.columns:
+        if 'Sales' in df.columns:
+            df['Calculated_Revenue'] = pd.to_numeric(df['Sales'], errors='coerce').fillna(0.0)
+        elif {'Quantity', 'UnitPrice'}.issubset(df.columns):
+            df['Calculated_Revenue'] = pd.to_numeric(df['Quantity'], errors='coerce') * pd.to_numeric(df['UnitPrice'], errors='coerce')
+        else:
+            df['Calculated_Revenue'] = 0.0
+
+    if 'OrderDate' in df.columns:
+        df['OrderDate'] = pd.to_datetime(df['OrderDate'], errors='coerce')
+    else:
+        st.error("Error: Could not find an 'Order Date' or 'OrderDate' column in the uploaded CSV.")
+        st.stop()
+
     st.sidebar.markdown("### Data Filters")
     regions = df['Region'].unique() if 'Region' in df.columns else []
     categories = df['Category'].unique() if 'Category' in df.columns else []
@@ -130,16 +149,13 @@ if uploaded_file is not None:
     selected_region = st.sidebar.multiselect("Region", options=regions, default=regions)
     selected_category = st.sidebar.multiselect("Product Category", options=categories, default=categories)
     
-    # Filter dataframe safely
     filtered_df = df.copy()
     if 'Region' in df.columns and selected_region:
         filtered_df = filtered_df[filtered_df['Region'].isin(selected_region)]
     if 'Category' in df.columns and selected_category:
         filtered_df = filtered_df[filtered_df['Category'].isin(selected_category)]
     
-    # -------------------------------------------------------------
-    # 3. Executive KPI Metrics Bar
-    # -------------------------------------------------------------
+
     total_revenue = filtered_df['Calculated_Revenue'].sum() if 'Calculated_Revenue' in filtered_df.columns else filtered_df['Sales'].sum()
     total_orders = filtered_df['OrderID'].nunique() if 'OrderID' in filtered_df.columns else len(filtered_df)
     avg_order_val = total_revenue / total_orders if total_orders > 0 else 0
@@ -158,9 +174,6 @@ if uploaded_file is not None:
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # -------------------------------------------------------------
-    # 4. Professional Visualizations Suite
-    # -------------------------------------------------------------
     col_a, col_b = st.columns(2)
     gradient_palette = ['#0284C7', '#0EA5E9', '#38BDF8', '#7DD3FC', '#BAE6FD']
 
@@ -212,9 +225,7 @@ if uploaded_file is not None:
         sns.despine(top=True, right=True)
         st.pyplot(time_fig)
 
-    # -------------------------------------------------------------
-    # 5. Machine Learning Integration: RFM Customer Segmentation
-    # -------------------------------------------------------------
+
     st.markdown("---")
     st.subheader("🤖 Unsupervised Machine Learning: RFM Customer Clustering")
     st.markdown("Segmenting customer behavioral profiles using **K-Means Clustering** across Recency, Frequency, and Monetary dimensions.")
